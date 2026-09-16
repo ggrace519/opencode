@@ -431,7 +431,7 @@ it.effect("writes a custom OpenAI-compatible provider without clobbering existin
   ),
 )
 
-it.effect("adds a custom provider to enabled_providers so it is not filtered out", () =>
+it.effect("writing a custom provider leaves an existing enabled_providers allowlist untouched", () =>
   withGlobalConfig({ config: { enabled_providers: ["anthropic"] } }, ({ dir }) =>
     Effect.gen(function* () {
       const info = ConfigProviderV1.buildOpenAICompatible({
@@ -439,12 +439,13 @@ it.effect("adds a custom provider to enabled_providers so it is not filtered out
         baseURL: "https://api.example.com/v1",
         modelIDs: ["m1"],
       })
-      // Mirror the onboarding write: provider block + extended allowlist in one patch.
-      yield* Config.use.updateGlobal({ provider: { myco: info }, enabled_providers: ["anthropic", "myco"] })
+      // The onboarding flow writes only the provider block and warns about the
+      // allowlist rather than silently editing the user's policy.
+      yield* Config.use.updateGlobal({ provider: { myco: info } })
 
       const file = path.join(dir, "opencode.json")
       const parsed = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(yield* FSUtil.use.readFileString(file), file), file)
-      expect(parsed.enabled_providers).toEqual(["anthropic", "myco"])
+      expect(parsed.enabled_providers).toEqual(["anthropic"])
       expect(parsed.provider?.myco?.name).toBe("My Co")
     }),
   ),

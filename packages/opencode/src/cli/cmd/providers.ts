@@ -6,7 +6,6 @@ import { UI } from "../ui"
 import * as Prompt from "../effect/prompt"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 
 import { map, pipe, sortBy, values } from "remeda"
 import path from "path"
@@ -475,6 +474,14 @@ export const ProvidersLoginCommand = effectCmd({
       if (!normalized) return yield* fail(`Invalid provider id "${rawID}" (use a-z, 0-9, hyphens, underscores)`)
       provider = normalized
 
+      // Custom flags mean "create a new custom provider" and are never compatible
+      // with an existing built-in or plugin id. Reject that combination before any
+      // plugin/collision handling so the flags can't be silently dropped.
+      const collidesPlugin = hooks.some((x) => x.auth?.provider === provider)
+      if (customFlagsProvided && (Object.hasOwn(allProviders, provider) || collidesPlugin)) {
+        return yield* fail(`"${provider}" is an existing provider; refusing to override it with custom flags.`)
+      }
+
       const customPlugin = hooks.findLast((x) => x.auth?.provider === provider)
       if (customPlugin && customPlugin.auth) {
         const handled = yield* handlePluginAuth({ auth: customPlugin.auth! }, provider, args.method)
@@ -482,11 +489,8 @@ export const ProvidersLoginCommand = effectCmd({
       }
 
       // Guard: overriding a built-in catalog provider by id is almost never intended.
-      // In the flag-driven (non-interactive) path there is no TTY to confirm on, so fail loudly.
-      if (allProviders[provider]) {
-        if (customFlagsProvided) {
-          return yield* fail(`"${provider}" is a built-in provider; refusing to override it with custom flags.`)
-        }
+      // (Interactive only — the flag-mode case already failed above.)
+      if (Object.hasOwn(allProviders, provider)) {
         const proceed = yield* promptValue(
           yield* Prompt.confirm({
             message: `"${provider}" is a built-in provider. Override it with a custom configuration?`,
@@ -576,13 +580,17 @@ export const ProvidersLoginCommand = effectCmd({
     // For a custom provider, persist a config block so it is usable immediately.
     if (custom && modelIDs) {
       const info = ConfigProviderV1.buildOpenAICompatible({ name: custom.name, baseURL: custom.baseURL, modelIDs })
-      const patch: ConfigV1.Info = { provider: { [provider]: info } }
-      // If an enabled_providers allowlist is set, the new provider would be hidden
-      // from /models unless we add it — otherwise setup "succeeds" but is invisible.
-      const enabled = config.enabled_providers
-      if (enabled && !enabled.includes(provider)) patch.enabled_providers = [...enabled, provider]
-      yield* Effect.orDie(cfgSvc.updateGlobal(patch))
+      yield* Effect.orDie(cfgSvc.updateGlobal({ provider: { [provider]: info } }))
       yield* Prompt.log.success(`Configured ${provider} with ${modelIDs.length} model${modelIDs.length === 1 ? "" : "s"}`)
+      // An enabled_providers allowlist filters the model list. We don't silently edit
+      // the user's policy (and a project-scoped allowlist would override a global patch
+      // anyway), so warn instead — the merged config is what actually applies.
+      const enabled = config.enabled_providers
+      if (enabled && !enabled.includes(provider)) {
+        yield* Prompt.log.warn(
+          `"${provider}" won't appear until you add it to enabled_providers in your config (currently: ${enabled.join(", ")}).`,
+        )
+      }
     }
 
     yield* Prompt.outro("Done")

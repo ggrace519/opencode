@@ -16,7 +16,6 @@ import { useConnected } from "./use-connected"
 import { useBindings } from "../keymap"
 import { useClipboard } from "../context/clipboard"
 import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
-import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -120,7 +119,7 @@ export function createDialogProviderOptions() {
         dialog.replace(
           () => (
             <DialogSelect
-              title={`"${providerID}" is a built-in provider. Override it?`}
+              title={`"${providerID}" is already a provider. Override it?`}
               options={[
                 { title: "Cancel", value: false },
                 { title: "Override with a custom configuration", value: true },
@@ -551,15 +550,19 @@ async function setupCustomProvider(props: SetupCustomProviderProps) {
   }
 
   const info = ConfigProviderV1.buildOpenAICompatible({ name, baseURL, modelIDs })
-  const patch: ConfigV1.Info = { provider: { [providerID]: info } }
-  // If an enabled_providers allowlist is set, the new provider would be hidden from
-  // the model picker unless we add it — otherwise setup "succeeds" but is invisible.
-  const enabled = sync.data.config.enabled_providers
-  if (enabled && !enabled.includes(providerID)) patch.enabled_providers = [...enabled, providerID]
-
-  const { error } = await sdk.client.global.config.update({ config: patch })
+  const { error } = await sdk.client.global.config.update({ config: { provider: { [providerID]: info } } })
   if (error) return unfinished(`Failed to write config: ${JSON.stringify(error)}.`)
   await sdk.client.instance.dispose()
   await sync.bootstrap()
+  // An enabled_providers allowlist filters the model picker. We don't silently edit the
+  // user's policy (a project-scoped allowlist would override a global patch anyway), so
+  // warn instead — the merged config is what actually applies.
+  const enabled = sync.data.config.enabled_providers
+  if (enabled && !enabled.includes(providerID)) {
+    toast.show({
+      variant: "info",
+      message: `"${providerID}" won't appear until you add it to enabled_providers in your config.`,
+    })
+  }
   dialog.replace(() => <DialogModel providerID={providerID} />)
 }
