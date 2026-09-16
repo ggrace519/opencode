@@ -16,6 +16,7 @@ import { useConnected } from "./use-connected"
 import { useBindings } from "../keymap"
 import { useClipboard } from "../context/clipboard"
 import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
+import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -27,7 +28,6 @@ const PROVIDER_PRIORITY: Record<string, number> = {
 }
 
 const CUSTOM_PROVIDER_OPTION_VALUE = "__opencode_custom_provider__"
-const CUSTOM_PROVIDER_ID = /^[a-z0-9][a-z0-9-_]*$/
 
 type ProviderOptionBase = {
   title: string
@@ -78,10 +78,9 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
   ]
 }
 
+// Delegates to the shared core helper so the CLI and TUI validate ids identically.
 export function normalizeCustomProviderID(value: string) {
-  const providerID = value.trim().replace(/^@ai-sdk\//, "")
-  if (!CUSTOM_PROVIDER_ID.test(providerID)) return
-  return providerID
+  return ConfigProviderV1.normalizeProviderID(value)
 }
 
 export function createDialogProviderOptions() {
@@ -104,14 +103,38 @@ export function createDialogProviderOptions() {
     if (value === null) return
 
     const providerID = normalizeCustomProviderID(value)
-    if (providerID) return providerID
+    if (!providerID) {
+      toast.show({
+        variant: "error",
+        message:
+          "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
+      })
+      return promptCustomProviderID()
+    }
 
-    toast.show({
-      variant: "error",
-      message:
-        "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
-    })
-    return promptCustomProviderID()
+    // Guard: an id that collides with a built-in/known provider would silently
+    // redirect that provider's config (baseURL/npm) when we write it. Confirm first,
+    // mirroring the CLI. `provider_next.all` is the catalog + connected providers.
+    if (sync.data.provider_next.all.some((p) => p.id === providerID)) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        dialog.replace(
+          () => (
+            <DialogSelect
+              title={`"${providerID}" is a built-in provider. Override it?`}
+              options={[
+                { title: "Cancel", value: false },
+                { title: "Override with a custom configuration", value: true },
+              ]}
+              onSelect={(option) => resolve(option.value)}
+            />
+          ),
+          () => resolve(false),
+        )
+      })
+      if (!proceed) return
+    }
+
+    return providerID
   }
 
   const options = createMemo(() => {
@@ -395,7 +418,7 @@ function ApiMethod(props: ApiMethodProps) {
       }
       onConfirm={async (value) => {
         if (!value) return
-        await sdk.client.auth.set({
+        const saved = await sdk.client.auth.set({
           providerID: props.providerID,
           auth: {
             type: "api",
@@ -403,11 +426,17 @@ function ApiMethod(props: ApiMethodProps) {
             ...(props.metadata ? { metadata: props.metadata } : {}),
           },
         })
+        if (saved.error) {
+          toast.show({ variant: "error", message: `Failed to save credential: ${JSON.stringify(saved.error)}` })
+          dialog.clear()
+          return
+        }
         await sdk.client.instance.dispose()
         await sync.bootstrap()
         // For a custom provider, guide the user through the remaining config
         // (base URL + models) and persist it, instead of dead-ending at opencode.json.
-        if (props.custom && !sync.data.provider_next.all.some((provider) => provider.id === props.providerID)) {
+        // Runs even if the id already exists — an override was confirmed at id entry.
+        if (props.custom) {
           await setupCustomProvider({ dialog, sdk, sync, toast, providerID: props.providerID })
           return
         }
@@ -467,22 +496,6 @@ async function PromptsMethod(props: PromptsMethodProps) {
   return inputs
 }
 
-function isHttpUrl(value: string) {
-  try {
-    const url = new URL(value)
-    return url.protocol === "http:" || url.protocol === "https:"
-  } catch {
-    return false
-  }
-}
-
-function parseModelIDs(value: string) {
-  return value
-    .split(",")
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0)
-}
-
 interface SetupCustomProviderProps {
   dialog: ReturnType<typeof useDialog>
   sdk: ReturnType<typeof useSDK>
@@ -495,12 +508,12 @@ interface SetupCustomProviderProps {
 async function setupCustomProvider(props: SetupCustomProviderProps) {
   const { dialog, sdk, sync, toast, providerID } = props
 
-  // The credential is already saved; cancelling mid-setup leaves it without a config
-  // block, so explain how to finish rather than silently dead-ending.
-  const cancel = () => {
+  // The credential is already saved; if we stop before writing the config block it
+  // has no effect, so always explain how to finish rather than silently dead-ending.
+  const unfinished = (extra?: string) => {
     toast.show({
-      variant: "info",
-      message: `Saved credential for ${providerID}. Run /connect again to finish setup.`,
+      variant: extra ? "error" : "info",
+      message: `${extra ? extra + " " : ""}Saved credential for ${providerID}. Run /connect again to finish setup.`,
     })
     dialog.clear()
   }
@@ -510,19 +523,21 @@ async function setupCustomProvider(props: SetupCustomProviderProps) {
     const value = await DialogPrompt.show(dialog, "Base URL", {
       placeholder: "https://api.example.com/v1",
     })
-    if (value === null) return cancel()
-    if (isHttpUrl(value.trim())) {
-      baseURL = value.trim()
+    if (value === null) return unfinished()
+    // Shared validation: http(s) only, trimmed, no secret embedded in the URL.
+    const normalized = ConfigProviderV1.normalizeBaseURL(value)
+    if (normalized) {
+      baseURL = normalized
       break
     }
-    toast.show({ variant: "error", message: "Enter a valid http(s) URL" })
+    toast.show({ variant: "error", message: "Enter a valid http(s) URL without an embedded key" })
   }
 
   const nameValue = await DialogPrompt.show(dialog, "Provider name", {
     placeholder: providerID,
     value: providerID,
   })
-  if (nameValue === null) return cancel()
+  if (nameValue === null) return unfinished()
   const name = nameValue.trim() || providerID
 
   let modelIDs: string[] = []
@@ -530,17 +545,20 @@ async function setupCustomProvider(props: SetupCustomProviderProps) {
     const value = await DialogPrompt.show(dialog, "Model id(s), comma-separated", {
       placeholder: "gpt-4o, my-model",
     })
-    if (value === null) return cancel()
-    modelIDs = parseModelIDs(value)
+    if (value === null) return unfinished()
+    modelIDs = ConfigProviderV1.parseModelIDs(value)
     if (modelIDs.length === 0) toast.show({ variant: "error", message: "Enter at least one model id" })
   }
 
   const info = ConfigProviderV1.buildOpenAICompatible({ name, baseURL, modelIDs })
-  const { error } = await sdk.client.global.config.update({ config: { provider: { [providerID]: info } } })
-  if (error) {
-    toast.show({ variant: "error", message: JSON.stringify(error) })
-    return dialog.clear()
-  }
+  const patch: ConfigV1.Info = { provider: { [providerID]: info } }
+  // If an enabled_providers allowlist is set, the new provider would be hidden from
+  // the model picker unless we add it — otherwise setup "succeeds" but is invisible.
+  const enabled = sync.data.config.enabled_providers
+  if (enabled && !enabled.includes(providerID)) patch.enabled_providers = [...enabled, providerID]
+
+  const { error } = await sdk.client.global.config.update({ config: patch })
+  if (error) return unfinished(`Failed to write config: ${JSON.stringify(error)}.`)
   await sdk.client.instance.dispose()
   await sync.bootstrap()
   dialog.replace(() => <DialogModel providerID={providerID} />)

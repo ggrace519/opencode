@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { normalizeCustomProviderID, providerOptions } from "../../../../src/component/dialog-provider"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 
 describe("providerOptions", () => {
   test("includes a synthetic Other option for custom providers", () => {
@@ -37,5 +38,17 @@ describe("providerOptions", () => {
     expect(normalizeCustomProviderID("@ai-sdk/custom-provider")).toBe("custom-provider")
     expect(normalizeCustomProviderID("-custom-provider")).toBeUndefined()
     expect(normalizeCustomProviderID("Custom Provider")).toBeUndefined()
+  })
+
+  test("delegates to the shared core normalizer so the CLI and TUI agree", () => {
+    for (const input of ["myco", "acme/proxy", "Bad", "@ai-sdk/x", "  a_b-c "]) {
+      expect(normalizeCustomProviderID(input)).toBe(ConfigProviderV1.normalizeProviderID(input))
+    }
+  })
+
+  test("a built-in id still normalizes (so the runtime collision guard can catch it)", () => {
+    // The guard is a catalog membership check on the normalized id, not a rejection here.
+    expect(normalizeCustomProviderID("openai")).toBe("openai")
+    expect(normalizeCustomProviderID("anthropic")).toBe("anthropic")
   })
 })
