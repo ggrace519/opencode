@@ -15,6 +15,7 @@ import { isConsoleManagedProvider } from "../util/provider-origin"
 import { useConnected } from "./use-connected"
 import { useBindings } from "../keymap"
 import { useClipboard } from "../context/clipboard"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -96,7 +97,7 @@ export function createDialogProviderOptions() {
       placeholder: "Provider id",
       description: () => (
         <text fg={theme.textMuted}>
-          This only stores a credential. Configure the provider in opencode.json to use it.
+          Add a custom OpenAI-compatible provider. You'll enter an API key, base URL, and model ids next.
         </text>
       ),
     })
@@ -404,12 +405,10 @@ function ApiMethod(props: ApiMethodProps) {
         })
         await sdk.client.instance.dispose()
         await sync.bootstrap()
+        // For a custom provider, guide the user through the remaining config
+        // (base URL + models) and persist it, instead of dead-ending at opencode.json.
         if (props.custom && !sync.data.provider_next.all.some((provider) => provider.id === props.providerID)) {
-          toast.show({
-            variant: "info",
-            message: `Saved credential for ${props.providerID}. Configure it in opencode.json to use it.`,
-          })
-          dialog.clear()
+          await setupCustomProvider({ dialog, sdk, sync, toast, providerID: props.providerID })
           return
         }
         dialog.replace(() => <DialogModel providerID={props.providerID} />)
@@ -466,4 +465,83 @@ async function PromptsMethod(props: PromptsMethodProps) {
     inputs[prompt.key] = value
   }
   return inputs
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+function parseModelIDs(value: string) {
+  return value
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0)
+}
+
+interface SetupCustomProviderProps {
+  dialog: ReturnType<typeof useDialog>
+  sdk: ReturnType<typeof useSDK>
+  sync: ReturnType<typeof useSync>
+  toast: ReturnType<typeof useToast>
+  providerID: string
+}
+// Runs after a custom provider's credential is saved: collects base URL + models,
+// persists a provider config block to global config, then opens the model picker.
+async function setupCustomProvider(props: SetupCustomProviderProps) {
+  const { dialog, sdk, sync, toast, providerID } = props
+
+  // The credential is already saved; cancelling mid-setup leaves it without a config
+  // block, so explain how to finish rather than silently dead-ending.
+  const cancel = () => {
+    toast.show({
+      variant: "info",
+      message: `Saved credential for ${providerID}. Run /connect again to finish setup.`,
+    })
+    dialog.clear()
+  }
+
+  let baseURL: string | null = null
+  while (baseURL === null) {
+    const value = await DialogPrompt.show(dialog, "Base URL", {
+      placeholder: "https://api.example.com/v1",
+    })
+    if (value === null) return cancel()
+    if (isHttpUrl(value.trim())) {
+      baseURL = value.trim()
+      break
+    }
+    toast.show({ variant: "error", message: "Enter a valid http(s) URL" })
+  }
+
+  const nameValue = await DialogPrompt.show(dialog, "Provider name", {
+    placeholder: providerID,
+    value: providerID,
+  })
+  if (nameValue === null) return cancel()
+  const name = nameValue.trim() || providerID
+
+  let modelIDs: string[] = []
+  while (modelIDs.length === 0) {
+    const value = await DialogPrompt.show(dialog, "Model id(s), comma-separated", {
+      placeholder: "gpt-4o, my-model",
+    })
+    if (value === null) return cancel()
+    modelIDs = parseModelIDs(value)
+    if (modelIDs.length === 0) toast.show({ variant: "error", message: "Enter at least one model id" })
+  }
+
+  const info = ConfigProviderV1.buildOpenAICompatible({ name, baseURL, modelIDs })
+  const { error } = await sdk.client.global.config.update({ config: { provider: { [providerID]: info } } })
+  if (error) {
+    toast.show({ variant: "error", message: JSON.stringify(error) })
+    return dialog.clear()
+  }
+  await sdk.client.instance.dispose()
+  await sync.bootstrap()
+  dialog.replace(() => <DialogModel providerID={providerID} />)
 }

@@ -5,6 +5,7 @@ import { CliError, effectCmd, fail } from "../effect-cmd"
 import { UI } from "../ui"
 import * as Prompt from "../effect/prompt"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 
 import { map, pipe, sortBy, values } from "remeda"
 import path from "path"
@@ -316,6 +317,18 @@ export const ProvidersLoginCommand = effectCmd({
         alias: ["m"],
         describe: "login method label (skips method selection)",
         type: "string",
+      })
+      .option("name", {
+        describe: "display name for a new custom OpenAI-compatible provider (only applies to an unknown provider id)",
+        type: "string",
+      })
+      .option("base-url", {
+        describe: "base URL for a new custom OpenAI-compatible provider, e.g. https://host/v1 (unknown provider id only)",
+        type: "string",
+      })
+      .option("model", {
+        describe: "model id(s) for a new custom provider, comma-separated (unknown provider id only)",
+        type: "string",
       }),
   handler: Effect.fn("Cli.providers.login")(function* (args) {
     const authSvc = yield* Auth.Service
@@ -408,6 +421,10 @@ export const ProvidersLoginCommand = effectCmd({
       })),
     ]
 
+    // Custom flags signal intent to create/override a provider by id, so an
+    // unknown --provider is treated as a new custom provider instead of an error.
+    const customFlagsProvided =
+      args.name !== undefined || args["base-url"] !== undefined || args.model !== undefined
     let provider: string
     if (args.provider) {
       const input = args.provider
@@ -415,9 +432,11 @@ export const ProvidersLoginCommand = effectCmd({
       const byName = options.find((x) => x.label.toLowerCase() === input.toLowerCase())
       const match = byID ?? byName
       if (!match) {
-        return yield* fail(`Unknown provider "${input}"`)
+        if (!customFlagsProvided) return yield* fail(`Unknown provider "${input}"`)
+        provider = "other"
+      } else {
+        provider = match.value
       }
-      provider = match.value
     } else {
       provider = yield* promptValue(
         yield* Prompt.autocomplete({
@@ -434,13 +453,20 @@ export const ProvidersLoginCommand = effectCmd({
       if (handled) return
     }
 
-    if (provider === "other") {
-      provider = (yield* promptValue(
-        yield* Prompt.text({
-          message: "Enter provider id",
-          validate: (x) => (x && x.match(/^[0-9a-z-]+$/) ? undefined : "a-z, 0-9 and hyphens only"),
-        }),
-      )).replace(/^@ai-sdk\//, "")
+    // A custom OpenAI-compatible provider: after storing the credential we also
+    // write a provider config block so it is usable without hand-editing opencode.json.
+    const isCustom = provider === "other"
+    let custom: { name: string; baseURL: string } | undefined
+    if (isCustom) {
+      provider = (
+        args.provider ??
+        (yield* promptValue(
+          yield* Prompt.text({
+            message: "Enter provider id",
+            validate: (x) => (x && x.match(/^[0-9a-z-]+$/) ? undefined : "a-z, 0-9 and hyphens only"),
+          }),
+        ))
+      ).replace(/^@ai-sdk\//, "")
 
       const customPlugin = hooks.findLast((x) => x.auth?.provider === provider)
       if (customPlugin && customPlugin.auth) {
@@ -448,9 +474,43 @@ export const ProvidersLoginCommand = effectCmd({
         if (handled) return
       }
 
-      yield* Prompt.log.warn(
-        `This only stores a credential for ${provider} - you will need configure it in opencode.json, check the docs for examples.`,
-      )
+      // Guard: overriding a built-in catalog provider by id is almost never intended.
+      // In the flag-driven (non-interactive) path there is no TTY to confirm on, so fail loudly.
+      if (allProviders[provider]) {
+        if (customFlagsProvided) {
+          return yield* fail(`"${provider}" is a built-in provider; refusing to override it with custom flags.`)
+        }
+        const proceed = yield* promptValue(
+          yield* Prompt.confirm({
+            message: `"${provider}" is a built-in provider. Override it with a custom configuration?`,
+            initialValue: false,
+          }),
+        )
+        if (!proceed) return yield* fail("Cancelled")
+      }
+
+      const name =
+        (
+          args.name ??
+          (yield* promptValue(
+            yield* Prompt.text({
+              message: "Provider name",
+              placeholder: provider,
+              defaultValue: provider,
+            }),
+          ))
+        ).trim() || provider
+      const baseURL =
+        args["base-url"] ??
+        (yield* promptValue(
+          yield* Prompt.text({
+            message: "Base URL",
+            placeholder: "https://api.example.com/v1",
+            validate: (x) => (x && isHttpUrl(x) ? undefined : "Enter a valid http(s) URL"),
+          }),
+        ))
+      if (!isHttpUrl(baseURL)) return yield* fail("Base URL must be a valid http(s) URL")
+      custom = { name, baseURL }
     }
 
     if (provider === "amazon-bedrock") {
@@ -484,9 +544,46 @@ export const ProvidersLoginCommand = effectCmd({
     const apiKey = yield* promptValue(key)
     yield* Effect.orDie(authSvc.set(provider, { type: "api", key: apiKey }))
 
+    // For a custom provider, also persist a config block so it is usable immediately.
+    if (custom) {
+      const modelIDs =
+        args.model !== undefined
+          ? parseModelIDs(args.model)
+          : parseModelIDs(
+              yield* promptValue(
+                yield* Prompt.text({
+                  message: "Model id(s), comma-separated",
+                  placeholder: "gpt-4o, my-model",
+                  validate: (x) => (x && parseModelIDs(x).length > 0 ? undefined : "Enter at least one model id"),
+                }),
+              ),
+            )
+      if (modelIDs.length === 0) return yield* fail("At least one model id is required")
+
+      const info = ConfigProviderV1.buildOpenAICompatible({ name: custom.name, baseURL: custom.baseURL, modelIDs })
+      yield* Effect.orDie(cfgSvc.updateGlobal({ provider: { [provider]: info } }))
+      yield* Prompt.log.success(`Configured ${provider} with ${modelIDs.length} model${modelIDs.length === 1 ? "" : "s"}`)
+    }
+
     yield* Prompt.outro("Done")
   }),
 })
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === "http:" || url.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+function parseModelIDs(value: string) {
+  return value
+    .split(",")
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0)
+}
 
 export const ProvidersLogoutCommand = effectCmd({
   command: "logout [provider]",

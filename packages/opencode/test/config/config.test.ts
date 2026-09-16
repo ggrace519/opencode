@@ -1,5 +1,6 @@
 import { test, expect, describe, afterEach, beforeEach, spyOn } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Cause, Effect, Exit, Layer, Logger, Option } from "effect"
@@ -396,6 +397,37 @@ it.effect("updates global config and omits empty shell key in jsonc", () =>
       expect(parsed.shell).toBeUndefined()
       expect(parsed.model).toBe("test/model")
     }),
+  ),
+)
+
+it.effect("writes a custom OpenAI-compatible provider without clobbering existing providers or leaking secrets", () =>
+  withGlobalConfig(
+    { config: { provider: { existing: { name: "Existing", options: { baseURL: "https://existing/v1" } } } } },
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const info = ConfigProviderV1.buildOpenAICompatible({
+          name: "My Provider",
+          baseURL: "https://api.example.com/v1",
+          modelIDs: ["model-a", "model-b"],
+        })
+        yield* Config.use.updateGlobal({ provider: { myco: info } })
+
+        const file = path.join(dir, "opencode.json")
+        const written = yield* FSUtil.use.readFileString(file)
+        const parsed = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(written, file), file)
+
+        // New provider block written with exactly the expected shape.
+        expect(parsed.provider?.myco).toEqual({
+          npm: "@ai-sdk/openai-compatible",
+          name: "My Provider",
+          options: { baseURL: "https://api.example.com/v1" },
+          models: { "model-a": { name: "model-a" }, "model-b": { name: "model-b" } },
+        })
+        // Deep-merge: the pre-existing provider survives.
+        expect(parsed.provider?.existing?.name).toBe("Existing")
+        // Security guardrail: no API key anywhere in the written config file.
+        expect(written).not.toContain("apiKey")
+      }),
   ),
 )
 

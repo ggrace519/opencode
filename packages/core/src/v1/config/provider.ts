@@ -130,3 +130,27 @@ export const Info = Schema.Struct({
   models: Schema.optional(Schema.Record(Schema.String, Model)),
 }).annotate({ identifier: "ProviderConfig" })
 export type Info = Schema.Schema.Type<typeof Info>
+
+/** npm package that backs OpenAI-compatible (`/v1/chat/completions`) providers. */
+export const OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+
+/**
+ * Build the minimal config block for a custom OpenAI-compatible provider.
+ *
+ * Pure: no I/O. The API key is intentionally NOT included here — it belongs in
+ * the credential store (auth.json), and is injected into the SDK at request time
+ * from `provider.key`. Writing it into config would be redundant and would leak
+ * the secret into opencode.json. Provider-level `api` is likewise omitted because
+ * `options.baseURL` is sufficient for URL resolution (see resolveSDK in
+ * provider/provider.ts).
+ */
+export function buildOpenAICompatible(input: { name: string; baseURL: string; modelIDs: readonly string[] }): Info {
+  const models: Record<string, Schema.Schema.Type<typeof Model>> = {}
+  for (const id of input.modelIDs) models[id] = { name: id }
+  return {
+    npm: OPENAI_COMPATIBLE_NPM,
+    name: input.name,
+    options: { baseURL: input.baseURL },
+    models,
+  }
+}
