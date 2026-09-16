@@ -430,15 +430,18 @@ function ApiMethod(props: ApiMethodProps) {
           dialog.clear()
           return
         }
-        await sdk.client.instance.dispose()
-        await sync.bootstrap()
         // For a custom provider, guide the user through the remaining config
         // (base URL + models) and persist it, instead of dead-ending at opencode.json.
         // Runs even if the id already exists — an override was confirmed at id entry.
+        // NB: do NOT dispose/bootstrap here — the config isn't written yet, so it can't
+        // surface the provider, and the reactive re-render tears down the next prompt.
+        // setupCustomProvider disposes/bootstraps itself after writing the config.
         if (props.custom) {
           await setupCustomProvider({ dialog, sdk, sync, toast, providerID: props.providerID })
           return
         }
+        await sdk.client.instance.dispose()
+        await sync.bootstrap()
         dialog.replace(() => <DialogModel providerID={props.providerID} />)
       }}
     />
