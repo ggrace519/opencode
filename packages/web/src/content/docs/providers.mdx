@@ -2548,6 +2548,8 @@ To add any **OpenAI-compatible** provider that's not listed in the `/connect` co
 You can use any OpenAI-compatible provider with opencode. Most modern AI providers offer OpenAI-compatible APIs.
 :::
 
+The `/connect` command now walks you through the whole setup — you no longer need to hand-edit `opencode.json` for a basic OpenAI-compatible provider.
+
 1. Run the `/connect` command and scroll down to **Other**.
 
    ```bash
@@ -2561,7 +2563,7 @@ You can use any OpenAI-compatible provider with opencode. Most modern AI provide
    └
    ```
 
-2. Enter a unique ID for the provider.
+2. Enter a unique ID for the provider, then your API key.
 
    ```bash
    $ /connect
@@ -2570,60 +2572,76 @@ You can use any OpenAI-compatible provider with opencode. Most modern AI provide
    │
    ◇  Enter provider id
    │  myprovider
-   └
-   ```
-
-   :::note
-   Choose a memorable ID, you'll use this in your config file.
-   :::
-
-3. Enter your API key for the provider.
-
-   ```bash
-   $ /connect
-
-   ┌  Add credential
-   │
-   ▲  This only stores a credential for myprovider - you will need to configure it in opencode.json, check the docs for examples.
    │
    ◇  Enter your API key
    │  sk-...
    └
    ```
 
-4. Create or update your `opencode.json` file in your project directory:
+   The API key is stored in your credential file, never written into `opencode.json`.
 
-   ```json title="opencode.json" ""myprovider"" {5-15}
-   {
-     "$schema": "https://opencode.ai/config.json",
-     "provider": {
-       "myprovider": {
-         "npm": "@ai-sdk/openai-compatible",
-         "name": "My AI Provider Display Name",
-         "options": {
-           "baseURL": "https://api.myprovider.com/v1"
-         },
-         "models": {
-           "my-model-name": {
-             "name": "My Model Display Name"
-           }
-         }
-       }
-     }
-   }
+3. Enter the base URL, a display name, and the model id(s) you want to use.
+
+   ```bash
+   ┌  Add credential
+   │
+   ◇  Base URL
+   │  https://api.myprovider.com/v1
+   │
+   ◇  Provider name
+   │  My AI Provider Display Name
+   │
+   ◇  Model id(s), comma-separated
+   │  my-model-name, another-model
+   └
    ```
 
-   Here are the configuration options:
-   - **npm**: AI SDK package to use, `@ai-sdk/openai-compatible` for OpenAI-compatible providers (for `/v1/chat/completions`). If your provider/model uses `/v1/responses`, use `@ai-sdk/openai`.
-   - **name**: Display name in UI.
-   - **models**: Available models.
-   - **options.baseURL**: API endpoint URL.
-   - **options.apiKey**: Optionally set the API key, if not using auth.
-   - **options.headers**: Optionally set custom headers.
+   OpenCode writes the provider configuration to your global config for you.
 
-   More on the advanced options in the example below.
+4. Run the `/models` command and your custom provider and models will appear in the selection list.
 
-5. Run the `/models` command and your custom provider and models will appear in the selection list.
+The generated config looks like this:
+
+```json title="opencode.json" ""myprovider"" {5-15}
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "myprovider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "My AI Provider Display Name",
+      "options": {
+        "baseURL": "https://api.myprovider.com/v1"
+      },
+      "models": {
+        "my-model-name": {
+          "name": "my-model-name"
+        }
+      }
+    }
+  }
+}
+```
+
+The configuration options are:
+
+- **npm**: AI SDK package to use, `@ai-sdk/openai-compatible` for OpenAI-compatible providers (for `/v1/chat/completions`). If your provider/model uses `/v1/responses`, use `@ai-sdk/openai`.
+- **name**: Display name in UI.
+- **models**: Available models.
+- **options.baseURL**: API endpoint URL.
+- **options.apiKey**: Optionally set the API key, if not using auth.
+- **options.headers**: Optionally set custom headers.
+
+You can edit this block by hand afterwards to tune advanced options (see the example below).
+
+:::tip
+The whole flow is also available from the CLI, including non-interactively:
+
+```bash
+opencode auth login -p myprovider --name "My AI Provider Display Name" \
+  --base-url https://api.myprovider.com/v1 --model my-model-name,another-model
+```
+
+:::
 
 ---
 

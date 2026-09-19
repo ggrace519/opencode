@@ -15,6 +15,7 @@ import { isConsoleManagedProvider } from "../util/provider-origin"
 import { useConnected } from "./use-connected"
 import { useBindings } from "../keymap"
 import { useClipboard } from "../context/clipboard"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -26,7 +27,6 @@ const PROVIDER_PRIORITY: Record<string, number> = {
 }
 
 const CUSTOM_PROVIDER_OPTION_VALUE = "__opencode_custom_provider__"
-const CUSTOM_PROVIDER_ID = /^[a-z0-9][a-z0-9-_]*$/
 
 type ProviderOptionBase = {
   title: string
@@ -77,10 +77,9 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
   ]
 }
 
+// Delegates to the shared core helper so the CLI and TUI validate ids identically.
 export function normalizeCustomProviderID(value: string) {
-  const providerID = value.trim().replace(/^@ai-sdk\//, "")
-  if (!CUSTOM_PROVIDER_ID.test(providerID)) return
-  return providerID
+  return ConfigProviderV1.normalizeProviderID(value)
 }
 
 export function createDialogProviderOptions() {
@@ -96,21 +95,45 @@ export function createDialogProviderOptions() {
       placeholder: "Provider id",
       description: () => (
         <text fg={theme.textMuted}>
-          This only stores a credential. Configure the provider in opencode.json to use it.
+          Add a custom OpenAI-compatible provider. You'll enter an API key, base URL, and model ids next.
         </text>
       ),
     })
     if (value === null) return
 
     const providerID = normalizeCustomProviderID(value)
-    if (providerID) return providerID
+    if (!providerID) {
+      toast.show({
+        variant: "error",
+        message:
+          "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
+      })
+      return promptCustomProviderID()
+    }
 
-    toast.show({
-      variant: "error",
-      message:
-        "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
-    })
-    return promptCustomProviderID()
+    // Guard: an id that collides with a built-in/known provider would silently
+    // redirect that provider's config (baseURL/npm) when we write it. Confirm first,
+    // mirroring the CLI. `provider_next.all` is the catalog + connected providers.
+    if (sync.data.provider_next.all.some((p) => p.id === providerID)) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        dialog.replace(
+          () => (
+            <DialogSelect
+              title={`"${providerID}" is already a provider. Override it?`}
+              options={[
+                { title: "Cancel", value: false },
+                { title: "Override with a custom configuration", value: true },
+              ]}
+              onSelect={(option) => resolve(option.value)}
+            />
+          ),
+          () => resolve(false),
+        )
+      })
+      if (!proceed) return
+    }
+
+    return providerID
   }
 
   const options = createMemo(() => {
@@ -394,7 +417,7 @@ function ApiMethod(props: ApiMethodProps) {
       }
       onConfirm={async (value) => {
         if (!value) return
-        await sdk.client.auth.set({
+        const saved = await sdk.client.auth.set({
           providerID: props.providerID,
           auth: {
             type: "api",
@@ -402,16 +425,23 @@ function ApiMethod(props: ApiMethodProps) {
             ...(props.metadata ? { metadata: props.metadata } : {}),
           },
         })
-        await sdk.client.instance.dispose()
-        await sync.bootstrap()
-        if (props.custom && !sync.data.provider_next.all.some((provider) => provider.id === props.providerID)) {
-          toast.show({
-            variant: "info",
-            message: `Saved credential for ${props.providerID}. Configure it in opencode.json to use it.`,
-          })
+        if (saved.error) {
+          toast.show({ variant: "error", message: `Failed to save credential: ${JSON.stringify(saved.error)}` })
           dialog.clear()
           return
         }
+        // For a custom provider, guide the user through the remaining config
+        // (base URL + models) and persist it, instead of dead-ending at opencode.json.
+        // Runs even if the id already exists — an override was confirmed at id entry.
+        // NB: do NOT dispose/bootstrap here — the config isn't written yet, so it can't
+        // surface the provider, and the reactive re-render tears down the next prompt.
+        // setupCustomProvider disposes/bootstraps itself after writing the config.
+        if (props.custom) {
+          await setupCustomProvider({ dialog, sdk, sync, toast, providerID: props.providerID })
+          return
+        }
+        await sdk.client.instance.dispose()
+        await sync.bootstrap()
         dialog.replace(() => <DialogModel providerID={props.providerID} />)
       }}
     />
@@ -466,4 +496,76 @@ async function PromptsMethod(props: PromptsMethodProps) {
     inputs[prompt.key] = value
   }
   return inputs
+}
+
+interface SetupCustomProviderProps {
+  dialog: ReturnType<typeof useDialog>
+  sdk: ReturnType<typeof useSDK>
+  sync: ReturnType<typeof useSync>
+  toast: ReturnType<typeof useToast>
+  providerID: string
+}
+// Runs after a custom provider's credential is saved: collects base URL + models,
+// persists a provider config block to global config, then opens the model picker.
+async function setupCustomProvider(props: SetupCustomProviderProps) {
+  const { dialog, sdk, sync, toast, providerID } = props
+
+  // The credential is already saved; if we stop before writing the config block it
+  // has no effect, so always explain how to finish rather than silently dead-ending.
+  const unfinished = (extra?: string) => {
+    toast.show({
+      variant: extra ? "error" : "info",
+      message: `${extra ? extra + " " : ""}Saved credential for ${providerID}. Run /connect again to finish setup.`,
+    })
+    dialog.clear()
+  }
+
+  let baseURL: string | null = null
+  while (baseURL === null) {
+    const value = await DialogPrompt.show(dialog, "Base URL", {
+      placeholder: "https://api.example.com/v1",
+    })
+    if (value === null) return unfinished()
+    // Shared validation: http(s) only, trimmed, no secret embedded in the URL.
+    const normalized = ConfigProviderV1.normalizeBaseURL(value)
+    if (normalized) {
+      baseURL = normalized
+      break
+    }
+    toast.show({ variant: "error", message: "Enter a valid http(s) URL without an embedded key" })
+  }
+
+  const nameValue = await DialogPrompt.show(dialog, "Provider name", {
+    placeholder: providerID,
+    value: providerID,
+  })
+  if (nameValue === null) return unfinished()
+  const name = nameValue.trim() || providerID
+
+  let modelIDs: string[] = []
+  while (modelIDs.length === 0) {
+    const value = await DialogPrompt.show(dialog, "Model id(s), comma-separated", {
+      placeholder: "gpt-4o, my-model",
+    })
+    if (value === null) return unfinished()
+    modelIDs = ConfigProviderV1.parseModelIDs(value)
+    if (modelIDs.length === 0) toast.show({ variant: "error", message: "Enter at least one model id" })
+  }
+
+  const info = ConfigProviderV1.buildOpenAICompatible({ name, baseURL, modelIDs })
+  const { error } = await sdk.client.global.config.update({ config: { provider: { [providerID]: info } } })
+  if (error) return unfinished(`Failed to write config: ${JSON.stringify(error)}.`)
+  await sdk.client.instance.dispose()
+  await sync.bootstrap()
+  // An enabled_providers allowlist filters the model picker. We don't silently edit the
+  // user's policy (a project-scoped allowlist would override a global patch anyway), so
+  // warn instead — the merged config is what actually applies.
+  const enabled = sync.data.config.enabled_providers
+  if (enabled && !enabled.includes(providerID)) {
+    toast.show({
+      variant: "info",
+      message: `"${providerID}" won't appear until you add it to enabled_providers in your config.`,
+    })
+  }
+  dialog.replace(() => <DialogModel providerID={providerID} />)
 }
