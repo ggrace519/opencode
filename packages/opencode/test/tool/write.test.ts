@@ -173,11 +173,22 @@ describe("tool.write", () => {
   })
 
   describe("file permissions", () => {
-    it.instance("sets file permissions when writing sensitive data", () =>
+    it.instance("writes files with the default 0644 mode under a standard umask", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "sensitive.json")
-        yield* run({ filePath: filepath, content: JSON.stringify({ secret: "data" }) })
+
+        // The write tool doesn't chmod; a written file's mode is the OS default
+        // (0666) filtered by the process umask. Pin a standard 0022 umask so the
+        // expected mode is deterministic regardless of the developer's umask
+        // (CI runs at 0022; a stricter local umask like 0002/0077 otherwise makes
+        // this assert 0664/0600 and fail). Restore the umask afterwards.
+        const previousUmask = process.umask(0o022)
+        try {
+          yield* run({ filePath: filepath, content: JSON.stringify({ secret: "data" }) })
+        } finally {
+          process.umask(previousUmask)
+        }
 
         if (process.platform !== "win32") {
           const stats = yield* Effect.promise(() => fs.stat(filepath))
