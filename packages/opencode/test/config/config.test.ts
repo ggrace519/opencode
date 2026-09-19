@@ -444,7 +444,11 @@ it.effect("writing a custom provider leaves an existing enabled_providers allowl
       yield* Config.use.updateGlobal({ provider: { myco: info } })
 
       const file = path.join(dir, "opencode.json")
-      const parsed = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(yield* FSUtil.use.readFileString(file), file), file)
+      const parsed = ConfigParse.schema(
+        ConfigV1.Info,
+        ConfigParse.jsonc(yield* FSUtil.use.readFileString(file), file),
+        file,
+      )
       expect(parsed.enabled_providers).toEqual(["anthropic"])
       expect(parsed.provider?.myco?.name).toBe("My Co")
     }),

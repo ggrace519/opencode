@@ -2623,6 +2623,7 @@ The generated config looks like this:
 ```
 
 The configuration options are:
+
 - **npm**: AI SDK package to use, `@ai-sdk/openai-compatible` for OpenAI-compatible providers (for `/v1/chat/completions`). If your provider/model uses `/v1/responses`, use `@ai-sdk/openai`.
 - **name**: Display name in UI.
 - **models**: Available models.
@@ -2639,6 +2640,7 @@ The whole flow is also available from the CLI, including non-interactively:
 opencode auth login -p myprovider --name "My AI Provider Display Name" \
   --base-url https://api.myprovider.com/v1 --model my-model-name,another-model
 ```
+
 :::
 
 ---

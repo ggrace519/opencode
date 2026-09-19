@@ -323,7 +323,8 @@ export const ProvidersLoginCommand = effectCmd({
         type: "string",
       })
       .option("base-url", {
-        describe: "base URL for a new custom OpenAI-compatible provider, e.g. https://host/v1 (unknown provider id only)",
+        describe:
+          "base URL for a new custom OpenAI-compatible provider, e.g. https://host/v1 (unknown provider id only)",
         type: "string",
       })
       .option("model", {
@@ -425,8 +426,7 @@ export const ProvidersLoginCommand = effectCmd({
     // provider, not to log into an existing one. Combined with a --provider id, they
     // force the custom branch — even for an id that matches a built-in, which is then
     // treated as a collision (rejected below) rather than a normal login.
-    const customFlagsProvided =
-      args.name !== undefined || args["base-url"] !== undefined || args.model !== undefined
+    const customFlagsProvided = args.name !== undefined || args["base-url"] !== undefined || args.model !== undefined
     let provider: string
     if (args.provider) {
       const input = args.provider
@@ -581,7 +581,9 @@ export const ProvidersLoginCommand = effectCmd({
     if (custom && modelIDs) {
       const info = ConfigProviderV1.buildOpenAICompatible({ name: custom.name, baseURL: custom.baseURL, modelIDs })
       yield* Effect.orDie(cfgSvc.updateGlobal({ provider: { [provider]: info } }))
-      yield* Prompt.log.success(`Configured ${provider} with ${modelIDs.length} model${modelIDs.length === 1 ? "" : "s"}`)
+      yield* Prompt.log.success(
+        `Configured ${provider} with ${modelIDs.length} model${modelIDs.length === 1 ? "" : "s"}`,
+      )
       // An enabled_providers allowlist filters the model list. We don't silently edit
       // the user's policy (and a project-scoped allowlist would override a global patch
       // anyway), so warn instead — the merged config is what actually applies.
