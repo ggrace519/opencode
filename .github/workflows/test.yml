@@ -28,9 +28,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -41,6 +41,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Defender real-time scanning of every file tests create pushes git/fs-heavy tests past their timeouts
+      - name: Exclude test paths from Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}", $env:TEMP, "$env:USERPROFILE\.cache", "$env:USERPROFILE\.bun"
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -48,6 +54,15 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+
+      # The windows-2025 image has no rg, so tests would download and extract it mid-run.
+      # Put the real rg.exe on PATH, not Chocolatey's shim, so spawned rg processes are direct children.
+      - name: Install ripgrep
+        if: runner.os == 'Windows'
+        run: |
+          choco install ripgrep -y --no-progress
+          rg_exe="$(find /c/ProgramData/chocolatey/lib/ripgrep -name rg.exe | head -1)"
+          cygpath -w "$(dirname "$rg_exe")" >> "$GITHUB_PATH"
 
       - name: Configure git identity
         run: |
@@ -86,9 +101,9 @@ jobs:
       matrix:
         settings:
           - name: linux
-            host: blacksmith-4vcpu-ubuntu-2404
+            host: ubuntu-24.04
           - name: windows
-            host: blacksmith-4vcpu-windows-2025
+            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
