@@ -41,6 +41,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Defender real-time scanning of every file tests create pushes git/fs-heavy tests past their timeouts
+      - name: Exclude test paths from Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}", $env:TEMP, "$env:USERPROFILE\.cache", "$env:USERPROFILE\.bun"
+
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
