@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # bun (not npm) so updates regenerate bun.lock
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # security updates only; version updates are taken from upstream
+    open-pull-requests-limit: 0
+    ignore:
+      # pinned to match patches/@modelcontextprotocol%2Fsdk@1.29.0.patch
+      - dependency-name: "@modelcontextprotocol/sdk"
