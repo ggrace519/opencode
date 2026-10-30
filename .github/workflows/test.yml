@@ -49,6 +49,11 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      # The windows-2025 image has no rg, so tests would download and extract it mid-run
+      - name: Install ripgrep
+        if: runner.os == 'Windows'
+        run: choco install ripgrep -y --no-progress
+
       - name: Configure git identity
         run: |
           git config --global user.email "bot@opencode.ai"
